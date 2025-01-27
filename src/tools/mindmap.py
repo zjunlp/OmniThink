@@ -43,13 +43,13 @@ class ConceptGenerator(dspy.Module):
         return concept_list
 
 class ExtendConcept(dspy.Signature):
-    """You are an analytical robot. I will provide you with a subject, the information I have searched about it, and our preliminary concept of it. I need you to generate a detailed, in-depth, and insightful report based on it, further exploring our initial ideas. 
+    """You are an analysis robot. I will give you a global topic and a subject, the information I have searched about it, and our preliminary concept of it. I need you to generate a detailed, in-depth, and insightful report based on the global topic and this subject to further explore our initial idea. Be careful not to deviate from the global topic.
 
 First, break down the subject into several broad categories, then create corresponding search engine keywords for each category. 
 
 Note: The new categories should not repeat the previous ones. 
 
-Your output format should be as follows:  
+Your output should strictly follow the following format:  
 -[Category 1]  
 --{Keyword 1}  
 --{Keyword 2}  
@@ -68,6 +68,104 @@ Think like a person, distill the core point of each piece of information, and sy
 Present your comprehensive opinion in the format of 1. 2. ..."""
     info = dspy.InputField(prefix='The webpage information you have collected:', format=str)
     concepts = dspy.OutputField(format=str)
+
+import re
+def remove_letters(input_str):
+    """
+    移除字符串中所有英文字母（大小写）
+    
+    参数：
+        input_str (str): 输入字符串
+    
+    返回：
+        str: 移除字母后的字符串
+    """
+    # 正则表达式匹配所有英文字母（大小写）
+    # pattern = r'[a-zA-Z]'
+    pattern = r'[a-zA-Z0-9\s]' 
+    
+    # 使用空字符串替换匹配到的字母
+    return re.sub(pattern, '', input_str)
+
+def remove_special_chars(input_str: str) -> str:
+    """
+    移除字符串中的 # - * { } [ ] : 符号
+    
+    参数:
+        input_str (str): 输入字符串
+    
+    返回:
+        str: 处理后的字符串
+    """
+    # 正则表达式模式：匹配需要移除的符号
+    # pattern = r'[#\-\*{}\[\]：:]'  # 注意：中文冒号 `：` 和英文冒号 `:` 均会被移除
+    pattern = r'[-#*{}\[\]：:]'
+    # 使用空字符串替换所有匹配项
+    return re.sub(pattern, '', input_str)
+
+def remove_keywords(input_str: str) -> str:
+    """
+    移除字符串中的以下关键词（不区分大小写）：
+    "Keyword 1", "Keyword 2", "keyword 1", "keyword 2", "Keyword", "keyword"
+    
+    参数:
+        input_str (str): 输入字符串
+    
+    返回:
+        str: 处理后的字符串
+    """
+    # 正则表达式模式：
+    # - \b 表示单词边界（确保匹配完整单词）
+    # - (?i) 表示忽略大小写
+    # - (?:...) 表示非捕获组
+    
+    pattern = r'(?i)\bKeyword\s*\d*\b'
+    # 替换为空白（同时合并多余空格）
+    result = re.sub(pattern, '', input_str)
+    return re.sub(r'\s+', ' ', result).strip()
+    return result
+
+from collections import Counter
+
+def sort_by_frequency_unique(lst):
+    """
+    将列表元素按重复次数从多到少排序（唯一元素）
+    
+    参数:
+        lst (list): 输入列表
+    
+    返回:
+        list: 排序后的元素列表，每个元素唯一
+    """
+    count = Counter(lst)
+    return sorted(count, key=lambda x: (-count[x], x))  # 次数降序，元素值升序
+
+def preprocess_keywords_for_phi4(keywords_str):
+    lines = keywords_str.split("\n")
+    lines = [ln.strip() for ln in lines]
+    lines = [ln for ln in lines if len(ln)>0]
+
+    formats = [remove_letters(ln) for ln in lines]
+    formats_sorted = sort_by_frequency_unique(formats)
+    
+    fmt_key = formats_sorted[0]
+    fmt_cat = formats_sorted[1]
+
+    categories = {}
+    cat = None
+    for ln,fmt in zip(lines, formats):
+        
+        if fmt == fmt_cat:
+            cat = remove_special_chars(ln).strip()
+            categories[cat] = []
+        elif fmt==fmt_key and  cat is not None:
+            keyword = remove_special_chars(ln)
+            keyword = remove_keywords(keyword)
+            keyword = keyword.strip()
+
+            categories[cat].append(keyword)
+
+    return categories
 
 
 class MindPoint():
@@ -99,6 +197,8 @@ class MindPoint():
                 keyword = line[3:-1].strip()
                 if keyword:
                     categories[current_category].append(keyword)
+        if len(categories)==0:
+            categories = preprocess_keywords_for_phi4(keywords)
 
         for category, keywords_list in categories.items():
             new_info = self.retriever(keywords_list)
@@ -225,7 +325,7 @@ class MindMap():
         Prepare collected snippets and URLs for retrieval by encoding the snippets using paraphrase-MiniLM-L6-v2.
         collected_urls and collected_snippets have corresponding indices.
         """
-        self.encoder = SentenceTransformer('/mnt/nas-alinlp/xizekun/huggingface_cache/all-MiniLM-L6-v2')
+        self.encoder = SentenceTransformer('paraphrase-MiniLM-L6-v2')
         self.collected_urls = []
         self.collected_snippets = []
         seen_urls = set()
